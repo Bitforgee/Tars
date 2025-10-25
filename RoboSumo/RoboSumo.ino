@@ -3,21 +3,17 @@
 // Melhorias: IA de combate, memória tática, anti-travamento
 // IMPORTANTE: 100% não-bloqueante usando millis()
 // Arena: Branca com listras pretas (borda escura)
+// CORREÇÕES: Detecção de borda e calibração não-bloqueante
 // ===============================================
 
 #include <AFMotor.h>
 #include <Ultrasonic.h>
 
 // ==== Sensores ====
-const int sensorFrontalIR = A0;
-const int sensorTraseiroIR = A1;
+const int sensorFrontalIR = A0;   // Pino digital para sensor IR frontal
+const int sensorTraseiroIR = A1;  // Pino digital para sensor IR traseiro
 const int trigPin = A4;
 const int echoPin = A5;
-
-// ==== Controle e Status ====
-const int ledBusca = 8;
-const int ledAtaque = 9;
-const int ledRecuo = 10;
 const int botaoStart = 7;
 
 // ==== Objetos ====
@@ -28,7 +24,7 @@ AF_DCMotor mFE(1), mFD(2), mTE(3), mTD(4);
 const int VEL_PADRAO = 255;
 const int VEL_ATAQUE_TURBO = 255;
 const int VEL_BUSCA_RAPIDA = 200;
-const int DIST_ATAQUE = 30;
+const int DIST_ATAQUE = 35;
 const int DIST_ATAQUE_TURBO = 15;
 const unsigned long INTERVALO_SENSOR = 50;
 const unsigned long TEMPO_MOV = 250;
@@ -44,6 +40,20 @@ int refFrente = 0;
 int refTras = 0;
 int margemFrente = 100;
 int margemTras = 100;
+
+// ==== Variáveis para calibração não-bloqueante ====
+enum EstadoCalibracao {
+  CALIB_INICIO,
+  CALIB_AGUARDANDO,
+  CALIB_COLETANDO,
+  CALIB_CONCLUIDA
+};
+EstadoCalibracao estadoCalibracao = CALIB_INICIO;
+unsigned long tInicioCalibracao = 0;
+int contagemLeituras = 0;
+long somaF = 0, somaT = 0;
+int menorF = 1023, maiorF = 0;
+int menorT = 1023, maiorT = 0;
 
 // ==== Controle temporal ====
 unsigned long tUltSensor = 0;
@@ -93,7 +103,7 @@ enum EstadoRobo {
   AJUSTANDO,
   ECONOMIA,
   BUSCA_AGRESSIVA,
-  CORRIGINDO_TRAVAMENTO  // Novo: estado específico para anti-travamento
+  CORRIGINDO_TRAVAMENTO
 };
 EstadoRobo estadoAtual = AGUARDANDO;
 
@@ -151,7 +161,6 @@ void direita(int velocidade = VEL_PADRAO) {
 }
 
 // ==== FILTRO DE DISTÂNCIA NÃO-BLOQUEANTE ====
-// Função para iniciar uma nova leitura de distância
 void iniciarLeituraDistancia() {
   indiceDistancia = 0;
   leiturasValidas = 0;
@@ -159,11 +168,8 @@ void iniciarLeituraDistancia() {
   tInicioLeituraDistancia = millis();
 }
 
-// Função que coleta leituras de forma não-bloqueante
 bool atualizarLeituraDistancia(unsigned long agora) {
-  // Se ainda não completou as 3 leituras
   if (indiceDistancia < 3) {
-    // Verifica se passou tempo suficiente desde a última leitura
     if (agora - tInicioLeituraDistancia >= (indiceDistancia * INTERVALO_LEITURA_DIST)) {
       long d = ultrasonic.read();
       if (d > 0 && d < 200) {
@@ -174,7 +180,6 @@ bool atualizarLeituraDistancia(unsigned long agora) {
       }
       indiceDistancia++;
 
-      // Se completou as 3 leituras
       if (indiceDistancia >= 3) {
         filtroCompleto = true;
       }
@@ -183,7 +188,6 @@ bool atualizarLeituraDistancia(unsigned long agora) {
   return filtroCompleto;
 }
 
-// Retorna a distância filtrada (média das leituras válidas)
 long obterDistanciaFiltrada() {
   if (!filtroCompleto || leiturasValidas == 0) {
     return 0;
@@ -199,100 +203,123 @@ long obterDistanciaFiltrada() {
   return (soma / leiturasValidas) * CORR_DIST;
 }
 
-// ==== Funções de Borda ====
+// ==== FUNÇÕES DE BORDA CORRIGIDAS (DIGITAL) ====
+// Sensores IR digitais:
+// Arena BRANCA = HIGH (1) - reflete luz
+// Borda PRETA = LOW (0) - absorve luz
 bool bordaFrente() {
-  return analogRead(sensorFrontalIR) < (refFrente - margemFrente);
+  // Lê estado digital: LOW = detectou preto (borda)
+  bool detectou = (digitalRead(sensorFrontalIR) == 1);
+
+  // Debug - descomente se necessário
+  Serial.print("BORDA FRONTAL: ");
+  Serial.print(digitalRead(sensorFrontalIR));
+  Serial.print("BORDA TRASEIRA: ");
+  Serial.print(digitalRead(sensorTraseiroIR));
+  Serial.print(" | Borda FRONTAL: ");
+  Serial.println(detectou ? "SIM" : "NAO");
+
+  return detectou;
 }
 
 bool bordaTras() {
-  return analogRead(sensorTraseiroIR) < (refTras - margemTras);
+  // Lê estado digital: LOW = detectou preto (borda)
+  bool detectou = (digitalRead(sensorTraseiroIR) == 1);
+
+  Serial.print("BORDA FRONTAL: ");
+  Serial.print(digitalRead(sensorFrontalIR));
+  Serial.print("BORDA TRASEIRA: ");
+  Serial.print(digitalRead(sensorTraseiroIR));
+  Serial.print(" | Borda TRASEIRA: ");
+  Serial.println(detectou ? "SIM" : "NAO");
+  return detectou;
 }
 
-// ==== LEDs ====
-void leds() {
-  digitalWrite(ledBusca, estadoAtual == PROCURANDO || estadoAtual == BUSCA_AGRESSIVA);
-  digitalWrite(ledAtaque, estadoAtual == ATACANDO || estadoAtual == ATAQUE_TURBO);
-  digitalWrite(ledRecuo, (estadoAtual == RECUANDO || estadoAtual == AJUSTANDO || estadoAtual == CORRIGINDO_TRAVAMENTO));
-}
+// ==== CALIBRAÇÃO NÃO NECESSÁRIA (SENSORES DIGITAIS) ====
+// Sensores digitais já retornam HIGH/LOW, não precisam calibração
+bool CalibrarSensores() {
+  unsigned long agora = millis();
 
-// ==== Calibração (único lugar onde delay() é aceitável - setup inicial) ====
-void CalibrarSensores() {
-  Serial.println(F("Calibrando sensores... mantenha o robô sobre a arena branca."));
-  delay(2000);  // OK aqui: é só no setup, antes da luta começar
+  switch (estadoCalibracao) {
+    case CALIB_INICIO:
+      Serial.println(F("Testando sensores digitais IR..."));
+      tInicioCalibracao = agora;
+      estadoCalibracao = CALIB_AGUARDANDO;
+      return false;
 
-  long somaF = 0, somaT = 0;
-  int menorF = 1023, maiorF = 0;
-  int menorT = 1023, maiorT = 0;
+    case CALIB_AGUARDANDO:
+      if (agora - tInicioCalibracao >= 1000) {
+        estadoCalibracao = CALIB_COLETANDO;
+        tInicioCalibracao = agora;
+        Serial.println(F("Verificando sensores..."));
+      }
+      return false;
 
-  for (int i = 0; i < 50; i++) {
-    int valF = analogRead(sensorFrontalIR);
-    int valT = analogRead(sensorTraseiroIR);
+    case CALIB_COLETANDO:
+      if (agora - tInicioCalibracao >= 1000) {
+        // Lê estado atual dos sensores
+        int valF = digitalRead(sensorFrontalIR);
+        int valT = digitalRead(sensorTraseiroIR);
 
-    somaF += valF;
-    somaT += valT;
+        Serial.println(F("==== Teste de Sensores ===="));
+        Serial.print(F("IR Frontal: "));
+        Serial.println(valF == HIGH ? "BRANCO" : "PRETO");
+        Serial.print(F("IR Traseiro: "));
+        Serial.println(valT == HIGH ? "BRANCO" : "PRETO");
+        Serial.println(F("==========================="));
+        Serial.println(F("IMPORTANTE: Sensores devem estar em BRANCO na arena!"));
+        Serial.println(F("Se estiverem em PRETO, ajuste a sensibilidade dos sensores."));
 
-    if (valF < menorF) menorF = valF;
-    if (valF > maiorF) maiorF = valF;
-    if (valT < menorT) menorT = valT;
-    if (valT > maiorT) maiorT = valT;
+        estadoCalibracao = CALIB_CONCLUIDA;
+      }
+      return false;
 
-    delay(20);  // OK aqui: é calibração inicial
+    case CALIB_CONCLUIDA:
+      return true;
   }
 
-  refFrente = somaF / 50;
-  refTras = somaT / 50;
-
-  margemFrente = max(80, (maiorF - menorF) / 2);
-  margemTras = max(80, (maiorT - menorT) / 2);
-
-  Serial.println(F("==== Calibração concluída ===="));
-  Serial.print(F("Ref. Frente: "));
-  Serial.println(refFrente);
-  Serial.print(F("Margem Frente: "));
-  Serial.println(margemFrente);
-  Serial.print(F("Ref. Trás: "));
-  Serial.println(refTras);
-  Serial.print(F("Margem Trás: "));
-  Serial.println(margemTras);
-  Serial.println(F("=============================="));
+  return false;
 }
 
 // ==== Estratégia de busca inteligente ====
 void executarBuscaInteligente(unsigned long agora) {
   unsigned long tempoNaBusca = agora - tempoBusca;
 
-  // Se perdeu o oponente recentemente, busca na última direção
-  if (ultimaDirecaoOponente != DESCONHECIDA && (agora - tUltDeteccao) < 1500) {
+  // 1. Se viu oponente recentemente, tenta reencontrar rapidamente
+  if (ultimaDirecaoOponente != DESCONHECIDA && (agora - tUltDeteccao) < 1000) {  // agora 1 segundo
     switch (ultimaDirecaoOponente) {
-      case ESQUERDA:
-        esquerda(VEL_BUSCA_RAPIDA);
-        break;
-      case DIREITA:
-        direita(VEL_BUSCA_RAPIDA);
-        break;
-      case FRENTE:
-        frente(VEL_BUSCA_RAPIDA);
-        break;
+      case ESQUERDA: esquerda(VEL_BUSCA_RAPIDA); break;
+      case DIREITA: direita(VEL_BUSCA_RAPIDA); break;
+      case FRENTE: frente(VEL_BUSCA_RAPIDA); break;
     }
     return;
   }
 
-  // Busca em espiral com variação de velocidade
+  // 2. Alternância mais rápida dos padrões
   if (padraoAtual == 0) {
-    int fator = map(tempoNaBusca % 3000, 0, 3000, 60, 150);
+    int fator = map(tempoNaBusca % 1200, 0, 1200, 60, 140);
     setVel(VEL_BUSCA_RAPIDA, VEL_BUSCA_RAPIDA - fator);
     esquerda();
 
-    if (tempoNaBusca > 4000) {
+    // Troca para padrão 1 mais rápido
+    if (tempoNaBusca > 1200) {
       padraoAtual = 1;
       tempoBusca = agora;
     }
-  }
-  // Varredura rápida
-  else if (padraoAtual == 1) {
+  } else if (padraoAtual == 1) {
     direita(VEL_PADRAO);
 
-    if (tempoNaBusca > 2000) {
+    // Troca para padrão 0 mais rápido
+    if (tempoNaBusca > 600) {
+      padraoAtual = 2;  // Adiciona novo padrão: avanço rápido
+      tempoBusca = agora;
+    }
+  }
+  // 3. Padrão de avanço (curto e reativo)
+  else if (padraoAtual == 2) {
+    frente(VEL_BUSCA_RAPIDA);
+    // Avança por 400ms, depois volta a girar
+    if (tempoNaBusca > 400) {
       padraoAtual = 0;
       tempoBusca = agora;
     }
@@ -301,13 +328,14 @@ void executarBuscaInteligente(unsigned long agora) {
   contadorBuscaSemSucesso++;
 }
 
+
 // ==== Detecta travamento ====
 bool detectarTravamento(unsigned long agora) {
   return (agora - tUltMudancaEstado) > TEMPO_ANTI_TRAVAMENTO
          && (estadoAtual == PROCURANDO || estadoAtual == BUSCA_AGRESSIVA);
 }
 
-// ==== Executa correção de travamento (NÃO-BLOQUEANTE) ====
+// ==== Executa correção de travamento ====
 void executarCorrecaoTravamento(unsigned long agora) {
   switch (subEstadoAtual) {
     case SUB_INICIO:
@@ -343,84 +371,109 @@ void executarCorrecaoTravamento(unsigned long agora) {
   }
 }
 
-// ==== Setup ====
+// ==== SETUP ====
 void setup() {
   Serial.begin(9600);
 
   pinMode(sensorFrontalIR, INPUT);
   pinMode(sensorTraseiroIR, INPUT);
-  //pinMode(botaoStart, INPUT_PULLUP);
-  pinMode(ledBusca, OUTPUT);
-  pinMode(ledAtaque, OUTPUT);
-  pinMode(ledRecuo, OUTPUT);
 
   setVel(VEL_PADRAO, VEL_PADRAO);
-  CalibrarSensores();
+  estadoCalibracao = CALIB_INICIO;
 
-  Serial.println(F("Pressione o botão para iniciar..."));
-  Serial.println(F("=== MODO ESTRATÉGICO 4.1 (100% NÃO-BLOQUEANTE) ==="));
+  Serial.println(F("=== ROBÔ SUMÔ 4.1 - MODO NÃO-BLOQUEANTE ==="));
+  Serial.println(F("Iniciando calibração..."));
 }
 
-// ==== Loop Principal ====
+bool Iniciar() {
+  static bool aguardandoBotao = true;
+  static bool esperando = false;
+  static unsigned long tInicio = 0;
+
+  // Espera o botão ser pressionado (LOW = pressionado, se for INPUT_PULLUP)
+  if (aguardandoBotao) {
+    if (digitalRead(botaoStart) == 1) {
+      aguardandoBotao = false;
+      esperando = true;
+      tInicio = millis();  // Marca o início da espera de 5 segundos
+    }
+    return false;
+  }
+
+  // Espera 5 segundos depois do botão
+  if (esperando) {
+    if (millis() - tInicio >= 5000) {
+      esperando = false;  // Finaliza espera
+      return true;        // Pronto para começar!
+    }
+    return false;  // Ainda esperando os 5 segundos
+  }
+
+  // Já iniciou
+  return true;
+}
+
+// ==== LOOP PRINCIPAL ====
 void loop() {
   unsigned long agora = millis();
 
-  // ==== START ====
-  // if (!roboAtivo && digitalRead(botaoStart) == LOW) {
-  if (!roboAtivo) {
-    // Debounce não-bloqueante simples
-    static unsigned long tUltBotao = 0;
-    if (agora - tUltBotao > 50) {
-      //if (digitalRead(botaoStart) == LOW) {
+  // ==== FASE 1: CALIBRAÇÃO ====
+  if (estadoCalibracao != CALIB_CONCLUIDA) {
+    CalibrarSensores();
+    return;
+  }
+
+  // ==== FASE 2: AGUARDANDO BOTÃO E 5 SEGUNDOS ====
+  static bool iniciouCombate = false; // Marca se já liberou o combate
+
+  if (!iniciouCombate) {
+    if (Iniciar()) { // Só libera quando apertou botão e passaram 5s
+      iniciouCombate = true;
       roboAtivo = true;
       estadoAtual = PROCURANDO;
       tempoBusca = agora;
       tUltMudancaEstado = agora;
       iniciarLeituraDistancia();
       Serial.println(F("=== COMBATE INICIADO ==="));
-      // }
-      tUltBotao = agora;
+    } else {
+      // Aqui pode piscar LED, printar algo, etc, enquanto aguarda botão/start
+      return; // Não faz nada até liberar
     }
   }
 
-  if (!roboAtivo) {
-    digitalWrite(ledBusca, (millis() / 300) % 2);
-    return;
-  }
+  // ==== FASE 3: COMBATE ====
 
-  // ==== ECONOMIA ====
+  // Modo economia
   if ((agora - tUltMov) > TEMPO_INATIVIDADE && estadoAtual != ECONOMIA) {
     pararMotores();
     estadoAtual = ECONOMIA;
     Serial.println(F("Modo economia ativado"));
   }
 
-  // ==== Anti-travamento ====
+  // Anti-travamento
   if (detectarTravamento(agora) && estadoAtual != CORRIGINDO_TRAVAMENTO) {
     estadoAtual = CORRIGINDO_TRAVAMENTO;
     subEstadoAtual = SUB_INICIO;
     Serial.println(F("Travamento detectado!"));
   }
 
-  // ==== Atualiza leitura de distância não-bloqueante ====
+  // Atualiza leitura de distância
   atualizarLeituraDistancia(agora);
 
-  // ==== LOOP PRINCIPAL ====
+  // Loop principal de sensores
   if (agora - tUltSensor >= INTERVALO_SENSOR) {
     tUltSensor = agora;
 
-    // Se o filtro está completo, obtém a distância e reinicia
     long d = 0;
     if (filtroCompleto) {
       d = obterDistanciaFiltrada();
-      iniciarLeituraDistancia();  // Inicia novo ciclo de leituras
+      iniciarLeituraDistancia();
     }
 
     bool bF = bordaFrente();
     bool bT = bordaTras();
-    leds();
 
-    // Debug
+    // Debug periódico
     if (contadorBuscaSemSucesso % 50 == 0) {
       Serial.print(F("Dist: "));
       Serial.print(d);
@@ -431,12 +484,15 @@ void loop() {
     switch (estadoAtual) {
       case PROCURANDO:
       case BUSCA_AGRESSIVA:
-        if (d > 0 && d < DIST_ATAQUE) {
+        if (bF || bT) {
+          estadoAtual = AJUSTANDO;
+          subEstadoAtual = SUB_INICIO;
+          tUltMudancaEstado = agora;
+        } else if (d > 0 && d < DIST_ATAQUE) {
           tUltDeteccao = agora;
           ultimaDirecaoOponente = FRENTE;
           modoAgressivo = true;
           contadorBuscaSemSucesso = 0;
-
           if (d < DIST_ATAQUE_TURBO) {
             estadoAtual = ATAQUE_TURBO;
             Serial.println(F(">>> ATAQUE TURBO <<<"));
@@ -445,24 +501,21 @@ void loop() {
             Serial.println(F(">>> Oponente detectado! <<<"));
           }
           tUltMudancaEstado = agora;
-        } else if (bF || bT) {
-          estadoAtual = AJUSTANDO;
-          subEstadoAtual = SUB_INICIO;
-          tUltMudancaEstado = agora;
         } else {
           executarBuscaInteligente(agora);
         }
         break;
-
       case ATACANDO:
+        if (bF || bT) {
+          estadoAtual = RECUANDO;
+          subEstadoAtual = SUB_INICIO;
+          tUltMudancaEstado = agora;
+          break;
+        }
         if (d > DIST_ATAQUE || d == 0) {
           Serial.println(F("Oponente perdido - busca agressiva"));
           estadoAtual = BUSCA_AGRESSIVA;
           tempoBusca = agora;
-          tUltMudancaEstado = agora;
-        } else if (bF || bT) {
-          estadoAtual = RECUANDO;
-          subEstadoAtual = SUB_INICIO;
           tUltMudancaEstado = agora;
         } else {
           if (d < DIST_ATAQUE_TURBO) {
@@ -473,24 +526,24 @@ void loop() {
           }
         }
         break;
-
       case ATAQUE_TURBO:
+        if (bF || bT) {
+          estadoAtual = RECUANDO;
+          subEstadoAtual = SUB_INICIO;
+          tUltMudancaEstado = agora;
+          break;
+        }
         if (d > DIST_ATAQUE_TURBO && d < DIST_ATAQUE) {
           estadoAtual = ATACANDO;
         } else if (d > DIST_ATAQUE || d == 0) {
           estadoAtual = BUSCA_AGRESSIVA;
           tempoBusca = agora;
           tUltMudancaEstado = agora;
-        } else if (bF || bT) {
-          estadoAtual = RECUANDO;
-          subEstadoAtual = SUB_INICIO;
-          tUltMudancaEstado = agora;
         } else {
           frente(VEL_ATAQUE_TURBO);
           tUltDeteccao = agora;
         }
         break;
-
       case RECUANDO:
         switch (subEstadoAtual) {
           case SUB_INICIO:
@@ -498,10 +551,8 @@ void loop() {
             tInicioAcao = agora;
             subEstadoAtual = SUB_RECUANDO;
             break;
-
           case SUB_RECUANDO:
             if (agora - tInicioAcao >= TEMPO_RECUO_BORDA) {
-              // Gira para o lado oposto da última detecção
               if (ultimaDirecaoOponente == ESQUERDA) {
                 direita(VEL_PADRAO);
               } else {
@@ -511,7 +562,6 @@ void loop() {
               subEstadoAtual = SUB_GIRANDO;
             }
             break;
-
           case SUB_GIRANDO:
             if (agora - tInicioAcao >= TEMPO_GIRO_RAPIDO) {
               estadoAtual = modoAgressivo ? BUSCA_AGRESSIVA : PROCURANDO;
@@ -522,7 +572,6 @@ void loop() {
             break;
         }
         break;
-
       case AJUSTANDO:
         switch (subEstadoAtual) {
           case SUB_INICIO:
@@ -534,7 +583,6 @@ void loop() {
             tInicioAcao = agora;
             subEstadoAtual = SUB_RECUANDO;
             break;
-
           case SUB_RECUANDO:
             if (agora - tInicioAcao >= TEMPO_MOV) {
               estadoAtual = modoAgressivo ? BUSCA_AGRESSIVA : PROCURANDO;
@@ -545,29 +593,25 @@ void loop() {
             break;
         }
         break;
-
       case CORRIGINDO_TRAVAMENTO:
         executarCorrecaoTravamento(agora);
         break;
-
       case ECONOMIA:
         pararMotores();
-        //if (digitalRead(botaoStart) == LOW) {
         static unsigned long tUltBotaoEconomia = 0;
         if (agora - tUltBotaoEconomia > 50) {
-          //if (digitalRead(botaoStart) == LOW) {
+          // Descomente para usar botão:
+          // if (digitalRead(botaoStart) == 1) {
           estadoAtual = PROCURANDO;
           tempoBusca = agora;
           tUltMudancaEstado = agora;
           modoAgressivo = false;
           iniciarLeituraDistancia();
           Serial.println(F("Reativado do modo economia"));
-          //}
+          // }
           tUltBotaoEconomia = agora;
         }
-        // }
         break;
-
       case AGUARDANDO:
       default:
         pararMotores();
