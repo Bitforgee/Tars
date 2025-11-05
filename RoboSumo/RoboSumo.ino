@@ -15,6 +15,7 @@ const int sensorTraseiroIR = A1;     // Digital
 // ==== Constantes de Comportamento ====
 const int DELAY_INICIO = 5000;           // 5 segundos de espera inicial
 const int DIST_DETECCAO_OPONENTE = 40;   // 20 cm para detectar oponente// Leitura elevada = fora da arena
+const int VELOCIDADE_BUSCA = 240;        // Velocidade de busca mais rápida
 const int VELOCIDADE_NORMAL = 200;       // Velocidade padrão dos motores
 const int VELOCIDADE_ATAQUE = 255;       // Velocidade máxima para ataque
 
@@ -280,12 +281,12 @@ void buscarOponente() {
     tempoGiro = tempoAtualGiro;
   }
   
-  // Gira por 200ms
-  if ((tempoAtualGiro - tempoGiro) < 200) {
-    giraDireita(VELOCIDADE_NORMAL);
+  // Gira por 150ms com velocidade aumentada
+  if ((tempoAtualGiro - tempoGiro) < 150) {
+    giraDireita(VELOCIDADE_BUSCA);
   }
-  // Para por 100ms
-  else if ((tempoAtualGiro - tempoGiro) < 300) {
+  // Para por 50ms
+  else if ((tempoAtualGiro - tempoGiro) < 200) {
     parar();
   }
   // Finaliza ciclo
