@@ -62,7 +62,10 @@ void loop() {
   // Se detectou borda, recua para dentro da arena
   if (bordaDetetada) {
     recuarDaArena();
-    bordaDetetada = false;
+    // Só zera após recuo completo
+    if (tempoRecuo == 0) {
+      bordaDetetada = false;
+    }
   }
   // Caso contrário, busca oponente
   else {
@@ -234,21 +237,28 @@ void recuarDaArena() {
 
 /**
 * Detectou oponente: ataca em linha reta com máxima velocidade
+* Verifica borda continuamente durante o ataque
 */
 void atacarOponente() {
   unsigned long tempoAtualAtaque = millis();
   
+  // ⭐ Verifica borda SEMPRE durante o ataque
   verificarBordas();
+  
+  if(bordaDetetada) {
+    Serial.println("🚨 BORDA DETECTADA DURANTE ATAQUE!");
+    parar();
+    tempoAtaque = 0;  // Cancela o ataque
+    // O loop principal cuidará do recuo
+    return;
+  }
+  
   // Se não iniciou o ataque, inicializa
   if (tempoAtaque == 0) {
     Serial.println("🎯 ATACANDO OPONENTE!");
     tempoAtaque = tempoAtualAtaque;
   }
   // Ataca por 500ms
-  if(bordaDetetada){
-    recuarDaArena();
-    bordaDetetada = false;
-  }
   else if ((tempoAtualAtaque - tempoAtaque) < 500) {
     moveFrente(VELOCIDADE_ATAQUE);
   }
